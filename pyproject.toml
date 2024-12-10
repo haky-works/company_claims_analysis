@@ -17,11 +17,14 @@ dependencies = [
     "jupyter>=1.1.1",
     "matplotlib>=3.9.3",
     "python-dotenv>=1.0.1",
+    "altair>=5.5.0",
 ]
 requires-python = "==3.11.*"
 readme = "README.md"
 license = {text = "MIT"}
 
+[tool.pdm.scripts]
+start = "streamlit run Home.py"
 
 [tool.pdm]
 distribution = false
