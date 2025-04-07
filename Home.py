@@ -8,14 +8,19 @@ import plotly.graph_objects as go  # type: ignore
 from plotly.subplots import make_subplots  # type: ignore
 import plotly.express as px  # type: ignore
 from dotenv import load_dotenv
+from typing import TypedDict
 import altair as alt
 
 load_dotenv()
 data = os.environ["DATA_PATH"]
 
 
+class TimeFrame(TypedDict):
+    data: pd.DataFrame  # assuming claims is a pandas DataFrame
+
+
 @st.cache_data()
-def get_claims():
+def get_claims() -> pd.DataFrame:
     claims = pd.read_csv(data)
     claims["Claimed"] = claims["Claimed"].where(
         ~claims["ServiceProvider"].eq("INDIVIDUAL REFUNDS"), claims["Awarded"]
@@ -73,7 +78,7 @@ groups = {
     "Month": {"data": grouped_claims_by_month, "x": "label", "y": "Claimed"},
 }
 
-time_frames = {
+time_frames: dict[str, TimeFrame] = {
     "2022": {
         "data": claims[
             claims["DateofAttendance"].between("2022-02-15", "2023-02-14")
@@ -90,6 +95,7 @@ time_frames = {
         ].copy(),
     },
 }
+
 
 st.title(f"Analysis of {company_name} Claims")
 
@@ -179,7 +185,7 @@ if claim_period:
     total_attendance = grouped_data_specific["ClaimsNo"].nunique()
 
     facilities = (
-        grouped_data.groupby(by=["ServiceProvider"])
+        grouped_data.groupby(by=["ServiceProvider", "ServiceType"])
         .agg(
             cost=("cost", "sum"),
             count=("ClaimsNo", "nunique"),
@@ -233,7 +239,7 @@ if claim_period:
         summarized_top_5_services_per_facility["ServiceProvider"].isin(
             top_5_facilities["ServiceProvider"]
         )
-    ]
+    ].copy()
     top_5_service_with_top_5_facilities["Cost per visit"] = (
         top_5_service_with_top_5_facilities["cost"]
         / top_5_service_with_top_5_facilities["count"]
@@ -249,6 +255,7 @@ if claim_period:
         .reset_index()
     )
     top_facilities_claims_with_top_service_types = pd.DataFrame()
+    top_facilities_claims_data = pd.DataFrame()
 
     for facility_type in top_3_facility_types["ServiceType"]:
         all_facilities_with_type = summary_for_top_3_facility_types[
@@ -267,8 +274,27 @@ if claim_period:
                 ),
             )
         ].copy()  # type: ignore
-        summarized_top_5_services_per_top_facility = (
+        initial_summarized = (
             claims_of_top_5_services_from_top_facilities.groupby(
+                by=[
+                    "ServiceProvider",
+                    "ServiceType",
+                    "ClaimsNo",
+                    "MembershipNo",
+                    "TypeName",
+                ]
+            )
+            .agg(
+                Claimed=("Claimed", "sum"),
+                count=("TypeName", "count"),
+                # members=("MembershipNo", "nunique"),
+                # average=("Claimed", "mean"),
+            )
+            .reset_index()
+        )
+        # st.write(initial_summarized)
+        summarized_top_5_services_per_top_facility = (
+            initial_summarized.groupby(
                 by=["ServiceProvider", "ServiceType", "TypeName"]
             )
             .agg(
@@ -287,22 +313,75 @@ if claim_period:
             ignore_index=True,
         )
 
+        summarized_top_5_claims_per_facility = (
+            claims_of_top_5_services_from_top_facilities.groupby(
+                by=["ServiceProvider", "ServiceType"]
+            )
+            .agg(
+                cost=("Claimed", "sum"),
+                number=("ClaimsNo", "nunique"),
+                members=("MembershipNo", "nunique"),
+                # average=("Claimed", "mean"),
+            )
+            .reset_index()
+        )
+        # st.write(summarized_top_5_claims_per_facility)
+        top_facilities_claims_data = pd.concat(
+            [top_facilities_claims_data, summarized_top_5_claims_per_facility],
+            ignore_index=True,
+        )
+
+    if not top_facilities_claims_data.empty:
+        top_facilities_claims_data["Cost per visit"] = (
+            top_facilities_claims_data["cost"] / top_facilities_claims_data["number"]
+        )
+        top_facilities_claims_data = top_facilities_claims_data.sort_values(
+            by="cost", ascending=False
+        )
+
     top_facilities_claims_with_top_service_types = pd.merge(
         top_facilities_claims_with_top_service_types,
         top_5_services[["TypeName", "percent_weight"]],
         how="left",
         on="TypeName",
     )
-    top_facilities_claims_with_top_service_types["weighted_average"] = (
+    top_facilities_claims_with_top_service_types["weighted_average1"] = (
         top_facilities_claims_with_top_service_types["average"]
         * top_facilities_claims_with_top_service_types["percent_weight"]
     )
     # st.write(top_5_services)
     # st.write(top_facilities_claims_with_top_service_types)
-
+    st.dataframe(data.head(5))
+    my_consumption = (
+        data.groupby(by=["ClaimsNo", "Types"])
+        .agg(cost=("Claimed", "sum"))
+        .reset_index()
+    )
     cost_per_type = (
-        data.groupby(by=["Types"]).agg(cost=("Claimed", "sum")).reset_index()
+        my_consumption.groupby(by=["Types"])
+        .agg(cost=("cost", "sum"), frequency=("ClaimsNo", "count"))
+        .reset_index()
     )  # type: ignore
+
+top_types_count_summary = top_facilities_claims_with_top_service_types.groupby(
+    by="ServiceProvider"
+).agg(total_count=("count", "sum"))
+top_facilities_claims_with_top_service_types = (
+    top_facilities_claims_with_top_service_types.merge(
+        top_types_count_summary, "left", "ServiceProvider"
+    )
+)
+top_facilities_claims_with_top_service_types["weighted_average"] = (
+    top_facilities_claims_with_top_service_types["average"]
+    * (
+        top_facilities_claims_with_top_service_types["count"]
+        / top_facilities_claims_with_top_service_types["total_count"]
+    )
+)
+
+
+st.write(top_facilities_claims_with_top_service_types)
+st.write(top_facilities_claims_data)
 
 st.markdown("### What is the average cost per visit?")
 
@@ -319,12 +398,37 @@ st.markdown(
 
 col1, col2 = st.columns(2)
 
+st.dataframe(cost_per_type)
+
+
 if claim_period:
+    with st.popover("Chart Controls"):
+        chart = st.toggle("Make chart printable", False)
     fig1 = px.pie(facility_types, values="Claimed", names="ServiceType", hole=0.6)
     fig1.update_traces(rotation=-40, title="Proportion of Facility Types")
+    if chart:
+        fig1.update_layout(
+            font=dict(
+                size=18,  # Change font size to 18
+                family="Cambria",  # Optional: Change font family
+            ),
+            legend=dict(
+                font=dict(size=18)  # Change legend font size to 14
+            ),
+        )
 
     fig2 = px.pie(cost_per_type, values="cost", names="Types", hole=0.6)
     fig2.update_traces(title="Proportion of Service Types")
+    if chart:
+        fig2.update_layout(
+            font=dict(
+                size=18,  # Change font size to 18
+                family="Cambria",  # Optional: Change font family
+            ),
+            legend=dict(
+                font=dict(size=18)  # Change legend font size to 14
+            ),
+        )
 
     col1.plotly_chart(fig1, use_container_width=True)
     col2.plotly_chart(fig2, use_container_width=True)
@@ -366,6 +470,14 @@ for facility_type in top_3_facility_types["ServiceType"]:
     top_grouped = top_grouped.sort_values(by=["cost"], ascending=False).reset_index(
         drop=True
     )
+    top_average = (
+        top_facilities_claims_data[
+            top_facilities_claims_data["ServiceType"] == facility_type
+        ]
+        .head(5)
+        .copy()
+    )
+    # st.write(top_facilities_claims_data)
 
     radar_chart = go.Figure()
     st.markdown(f"#### Analyzing cost by {facility_type}")
@@ -375,39 +487,114 @@ for facility_type in top_3_facility_types["ServiceType"]:
     service_cost_expander = st.expander(
         f"What are the top {facility_type} with the highest cost per visit?"
     )
-    cost_graph = px.bar(top_grouped, x="ServiceProvider", y="cost")
+    cost_graph = px.bar(
+        top_grouped,
+        x="ServiceProvider",
+        y="cost",
+        title=f"Overall Cost incurred for top facilities {facility_type}",
+        text=[f"GH¢ {y:,.2f}" for y in top_grouped["cost"]],
+        color_discrete_sequence=["#0d502f"],
+    )
+    average_graph = px.bar(
+        top_average,
+        x="ServiceProvider",
+        y="Cost per visit",
+        title=f"Average cost per visit for top facilities {facility_type}",
+        text=[f"GH¢ {y:,.2f}" for y in top_average["Cost per visit"]],
+        color_discrete_sequence=["#09a739"],
+    )
+    # st.write(top_grouped)
+    # st.write(top_average)
+    # cost_graph.update_traces(textposition="outside")
+
+    # average_graph.update_layout(
+    #     font=dict(
+    #         size=14,  # Change font size to 18
+    #         # family="Cambria",  # Optional: Change font family
+    #     ),
+    #     title=dict(
+    #         font=dict(size=20)  # Change legend font size to 14
+    #     ),
+    # )
     number_check = (top["ServiceType"].count() / top["ServiceType"].nunique()) / top[
         "ServiceProvider"
     ].nunique()
     # st.write(top)
     # st.write(top_grouped.reset_index())
+    # with st.expander(
+    #     f"What are the top {facility_type} with the highest cost?", expanded=True
+    # ):
     facility_expander.plotly_chart(cost_graph)
+    facility_expander.plotly_chart(average_graph)
+
     with st.expander(
         f"Comparison of weighted averages for top {facility_type} based on Service Type"
     ):
-        if number_check > 4:
+        top_facility_type = facility_types.head(1)["ServiceType"].values[0]
+        popover = st.popover("Chart Controls")
+        with popover:
+            bar_chart = False
+            if number_check > 4:
+                bar_chart = st.toggle(
+                    "Use Radar chart",
+                    key="toggle-bar{}".format(facility_type),
+                )
+            else:
+                chart = st.toggle(
+                    f"Include {top_facility_type} facilities",
+                    key="toggle{}".format(facility_type),
+                )
+            average = st.toggle(
+                "Use weighted average",
+                key="toggle-average{}".format(facility_type),
+                value=False,
+            )
+
+        if bar_chart:
+            # with st.popover("Chart Controls"):
+            #     chart = st.toggle(
+            #         "Use Bar chart",
+            #         key="toggle{}".format(facility_type),
+            #     )
             for provider in top_grouped["ServiceProvider"].unique():
                 service_data = top[top["ServiceProvider"] == provider]
                 radar_chart.add_trace(
                     go.Scatterpolar(
-                        r=service_data["weighted_average"],
+                        r=service_data["weighted_average1"]
+                        if average
+                        else service_data["average"],
                         theta=service_data["TypeName"],
                         fill="toself",
                         name=provider,
+                        # marker=dict(color="#008000"),
                     )
                 )
-                radar_chart.update_layout(template="plotly_dark")
+                # radar_chart.update_layout(template="plotly_dark")
+                radar_chart.update_layout(
+                    font=dict(
+                        size=18,  # Change font size to 18
+                        # family="Cambria",  # Optional: Change font family
+                        color="gray",
+                    ),
+                    # polar=dict(
+                    #     radialaxis=dict(
+                    #         tickfont=dict(
+                    #             color="#008000"
+                    #         ),  # Set the color of the labels to green
+                    #     ),
+                    # ),
+                )
+                radar_chart.update_layout(template="plotly_white")
 
             st.plotly_chart(radar_chart)
         else:
-            top_facility_type = facility_types.head(1)["ServiceType"].values[0]
             final = top.copy()
             if facility_type != top_facility_type:
-                with st.popover("Chart Controls"):
-                    chart = st.toggle(
-                        f"Include {top_facility_type} facilities",
-                        key="toggle{}".format(facility_type),
-                    )
+                # with popover:
+                #     chart = st.toggle(
+                #         f"Include {top_facility_type} facilities",
+                #         key="toggle{}".format(facility_type),
+                #     )
 
                 if chart:
                     service_types_in_current_facility_type = top["TypeName"].unique()
@@ -437,7 +624,7 @@ for facility_type in top_3_facility_types["ServiceType"]:
             # st.plotly_chart(service_facility_graph)
 
             service_facility_graph = make_subplots(
-                rows=1, cols=1, subplot_titles=["Service Facility Graph"]
+                rows=1, cols=1, subplot_titles=["Average Cost of Services By Facility"]
             )
 
             for service_type in final["ServiceType"].unique():
@@ -449,7 +636,9 @@ for facility_type in top_3_facility_types["ServiceType"]:
                     service_facility_graph.add_trace(
                         go.Bar(
                             x=type_name_df["ServiceProvider"],
-                            y=type_name_df["weighted_average"],
+                            y=type_name_df["weighted_average"]
+                            if average
+                            else type_name_df["average"],
                             name=type_name,
                         ),
                         row=1,
@@ -458,3 +647,31 @@ for facility_type in top_3_facility_types["ServiceType"]:
 
             service_facility_graph.update_layout(barmode="group")
             st.plotly_chart(service_facility_graph)
+
+
+avg = [569.44, 798.14, 872.19]
+period = [2022, 2023, 2024]
+
+
+occurrence_graph = px.line(
+    # chronic_morb,
+    x=period,
+    y=avg,
+    labels={"x": "Year", "y": "Average Cost"},
+    # color="Diagnosis",
+    title="Trend of Trust Average Cost",
+    text=[f"{y:,.0f}" for y in avg],
+    # color_discrete_sequence=["#0d502f"],
+)
+
+occurrence_graph.update_layout(
+    font=dict(
+        size=14,  # Change font size to 18
+        # family="Cambria",  # Optional: Change font family
+    ),
+    title=dict(
+        font=dict(size=20)  # Change legend font size to 14
+    ),
+)
+
+st.plotly_chart(occurrence_graph)

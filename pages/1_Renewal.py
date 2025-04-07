@@ -13,7 +13,7 @@ import src.conversions as conv
 load_dotenv()
 data = os.environ["DATA_PATH"]
 member_data = os.environ["MEMBERSHIP_PATH"]
-age_date = "2024-08-31"
+age_date = "2024-09-30"
 company_name = os.environ["COMPANY_NAME"]
 
 
@@ -23,7 +23,7 @@ def get_current_claims():
     all_data["BenefitOption"] = all_data["BenefitOption"].str.strip()
     all_data["DateofAttendance"] = pd.to_datetime(all_data["DateofAttendance"])
     all_data["AttendanceMonth"] = all_data["DateofAttendance"].dt.month
-    claims = all_data[all_data["DateofAttendance"].between("2024-02-15", "2024-08-31")]
+    claims = all_data[all_data["DateofAttendance"].between("2024-02-15", "2024-09-30")]
     claims["Claimed"] = claims["Claimed"].where(
         ~claims["ServiceProvider"].eq("INDIVIDUAL REFUNDS"), claims["Awarded"]
     )
@@ -40,6 +40,32 @@ def get_current_claims():
     )
     claims["ServiceType"] = claims["ServiceType"].where(
         ~claims["ServiceType"].eq("EYE CLINIC/HOSPITAL"), "Optical Centre"
+    )
+    claims["BenefitOption"] = claims["BenefitOption"].where(
+        claims["BenefitOption"].ne("PREMIER PLUS"), "PREMIER"
+    )
+
+    claims["Types"] = claims["TypeName"]  # type: ignore
+
+    claims["Types"] = claims["Types"].replace(
+        {
+            "Administrative Services": "Admin",
+            "Diagnostic Investigations": "Diagnostic",
+            "Drugs": "Drugs",
+            "Specialist Consultation Services": "SP",
+            "ENT": "SP",
+            "Paediatrician": "SP",
+            "Physiotherapy": "SP",
+            "General Consultation Services": "GP",
+            "Hospital Accommodation Services": "Accommodation",
+            "In-Patient Service": "In-Patient Services",
+            "Out Patient Procedures": "Out-Patient Procedures",
+            "Maternity Care Services": "Maternity",
+            "Surgical Procedures": "Surgery",
+            "Surgical/ Medical Materials": "Surgery",
+            "Dental Services": "Dental",
+            "Optical Services": "Optical",
+        }
     )
     return claims
 
@@ -70,6 +96,7 @@ st.header("Distribution of Membership per plan")
 st.write(membership.shape)
 
 month_number = {"first_day": [], "size": [], "plan": []}  # type: ignore
+
 for plan in membership["Benefit Option"].unique():
     members_in_plan = membership[membership["Benefit Option"].eq(plan)].copy()
     # members_in_plan = members_in_plan[members_in_plan['Start D'].]
@@ -90,7 +117,7 @@ for plan in membership["Benefit Option"].unique():
     )
 
     start_date = "2024-02-01"
-    end_date = "2024-08-31"
+    end_date = "2024-09-30"
     months = pd.DataFrame()
     months["month"] = (
         pd.date_range(start=start_date, end=end_date, freq="MS", inclusive="both")
@@ -130,6 +157,48 @@ member_size_breakdown["month_name"] = member_size_breakdown["first_day"].dt.strf
 
 # st.write(claims.head())
 # st.write(claims["BenefitOption"].unique())
+grouped_data = (
+    claims.groupby(
+        by=[
+            "ClaimsNo",
+            "MembershipNo",
+            "DateofAttendance",
+            "ServiceProvider",
+            "ServiceType",
+            "Types",
+        ]
+    )
+    .agg(cost=("Claimed", "sum"))
+    .reset_index()
+)
+
+averages = (
+    grouped_data.groupby(by=["ServiceProvider", "Types"])
+    .agg(average=("cost", "mean"))
+    .reset_index()
+)
+
+# averages["average_cost"] = averages["total_cost"] / claims["MembershipNo"].nunique()
+# averages["month_number"] = averages["DateofAttendance"].dt.month
+other1 = "HEALTHCARE NETWORKS LIMITED-AIRPORT"
+other2 = "MEDIFEM MULTISPECIALIST HOSPITAL"
+
+trust = "THE TRUST  HOSPITAL"
+
+averages_networks = averages[averages["ServiceProvider"].eq(other1)]
+averages_medifem = averages[averages["ServiceProvider"].eq(other2)]
+averages_trust = averages[averages["ServiceProvider"].eq(trust)]
+
+averages_trust_medifem = averages_trust.merge(
+    averages_medifem[["average", "Types"]], how="left", on=["Types"]
+)
+
+st.write(averages)
+st.write(averages_networks)
+st.write(averages_medifem)
+st.write(averages_trust)
+
+
 claims_breakdown = (
     claims.groupby(by=["BenefitOption", "AttendanceMonth"])
     .agg(
@@ -149,14 +218,14 @@ claims_breakdown_with_members = pd.merge(
 claims_breakdown_with_members["average_cost_per_person"] = (
     claims_breakdown_with_members["cost"] / claims_breakdown_with_members["size"]
 )
-# st.write(
-#     claims_breakdown_with_members[
-#         ["plan", "month_name", "cost", "size", "average_cost_per_person"]
-#     ]
-# )
+st.write(
+    claims_breakdown_with_members[
+        ["plan", "month_name", "cost", "size", "average_cost_per_person"]
+    ]
+)
 
 date1 = "2024-02-15"
-date2 = "2024-08-31"
+date2 = "2024-09-30"
 date3 = "2025-02-14"
 # Convert the strings to datetime objects
 date1 = pd.to_datetime(date1)
@@ -203,3 +272,5 @@ claims_per_plan["cost_for_year_per_person"] = (
 )
 
 st.write(claims_per_plan[["plan", "cost", "cost_for_year_per_person"]])
+st.write(claims_per_plan)
+st.write(claims["Claimed"].sum())
